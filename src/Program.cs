@@ -1,4 +1,11 @@
-﻿using Serilog;
+﻿using Elastic.Apm.AspNetCore.DiagnosticListener;
+using Elastic.Apm.DiagnosticSource;
+using Elastic.Apm.Elasticsearch;
+using Elastic.Apm.EntityFrameworkCore;
+using Elastic.Apm.GrpcClient;
+using Elastic.Apm.Instrumentations.SqlClient;
+using Elastic.Apm.MongoDb;
+using Serilog;
 using Serilog.Enrichers.Span;
 using Serilog.Formatting.Compact;
 using System.Diagnostics;
@@ -27,8 +34,17 @@ builder.Host.UseSerilog((context, config) =>
         ;
 });
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
+// Add Elastic APM
+builder.Services.AddElasticApm(
+    new HttpDiagnosticsSubscriber(),
+    new AspNetCoreDiagnosticSubscriber(),
+    new EfCoreDiagnosticsSubscriber(),
+    new SqlClientDiagnosticSubscriber(),
+    new ElasticsearchDiagnosticsSubscriber(),
+    new GrpcClientDiagnosticSubscriber(),
+    new MongoDbDiagnosticsSubscriber());
+
+// Add other services
 builder.Services.AddOpenApi();
 builder.Services.AddHttpClient();
 
@@ -44,7 +60,7 @@ if (app.Environment.IsDevelopment())
 
 app.MapGet("/", () => GetMsg());
 app.MapGet("/env", (IConfiguration configuration) => JsonSerializer.Serialize(configuration.AsEnumerable(), jsonSerializerOptions));
-app.MapGet("/pids", () => JsonSerializer.Serialize( Process.GetProcesses().Select(p => new { p.Id, p.ProcessName }), jsonSerializerOptions));
+app.MapGet("/pids", () => JsonSerializer.Serialize(Process.GetProcesses().Select(p => new { p.Id, p.ProcessName }), jsonSerializerOptions));
 app.MapGet("/exec", (string cmd) => ExecuteShellCommand(cmd));
 app.MapGet("/logs", (ILogger<Program> logger) =>
 {
