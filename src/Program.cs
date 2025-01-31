@@ -1,14 +1,19 @@
-﻿using Elastic.Apm.AspNetCore.DiagnosticListener;
+﻿using Elastic.Apm;
+using Elastic.Apm.Api;
+using Elastic.Apm.AspNetCore.DiagnosticListener;
 using Elastic.Apm.DiagnosticSource;
 using Elastic.Apm.Elasticsearch;
 using Elastic.Apm.EntityFrameworkCore;
 using Elastic.Apm.GrpcClient;
 using Elastic.Apm.Instrumentations.SqlClient;
 using Elastic.Apm.MongoDb;
+using Elastic.Apm.SerilogEnricher;
 using Serilog;
 using Serilog.Enrichers.Span;
 using Serilog.Formatting.Compact;
+using Serilog.Sinks.Elasticsearch;
 using System.Diagnostics;
+using System.Reflection;
 using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -25,24 +30,35 @@ builder.Host.UseSerilog((context, config) =>
 
         // Add additional enrichers
         .Enrich.FromLogContext()
-        .Enrich.WithSpan()            // Add trace span enrichment
-        .Enrich.WithMachineName()     // Add machine name enrichment
-        .Enrich.WithEnvironmentName() // Add environment name enrichment
+        .Enrich.WithSpan()                          // Add trace span enrichment
+        .Enrich.WithMachineName()
+        .Enrich.WithEnvironmentName()
+        .Enrich.WithElasticApmCorrelationInfo()
 
         // Add default sink
         .WriteTo.Console(new RenderedCompactJsonFormatter())
-        ;
+        .WriteTo.Elasticsearch(new ElasticsearchSinkOptions(
+            new Uri("http://localhost:9200"))
+        {
+            AutoRegisterTemplate = true,
+            AutoRegisterTemplateVersion = AutoRegisterTemplateVersion.ESv8,
+            IndexFormat = "dotnet-logs-{0:yyyy.MM.dd}",
+            FailureCallback = e => Console.WriteLine("Unable to submit event " + e.MessageTemplate),
+            EmitEventFailure = EmitEventFailureHandling.WriteToSelfLog |
+                               EmitEventFailureHandling.WriteToFailureSink |
+                               EmitEventFailureHandling.RaiseCallback
+        });
 });
 
-// Add Elastic APM
 builder.Services.AddElasticApm(
-    new HttpDiagnosticsSubscriber(),
-    new AspNetCoreDiagnosticSubscriber(),
-    new EfCoreDiagnosticsSubscriber(),
-    new SqlClientDiagnosticSubscriber(),
-    new ElasticsearchDiagnosticsSubscriber(),
-    new GrpcClientDiagnosticSubscriber(),
-    new MongoDbDiagnosticsSubscriber());
+   new HttpDiagnosticsSubscriber(),
+   new AspNetCoreDiagnosticSubscriber()
+//    new EfCoreDiagnosticsSubscriber(),
+//    new SqlClientDiagnosticSubscriber(),
+//    new ElasticsearchDiagnosticsSubscriber(),
+//    new GrpcClientDiagnosticSubscriber(),
+//    new MongoDbDiagnosticsSubscriber()
+   );
 
 // Add other services
 builder.Services.AddOpenApi();
@@ -64,6 +80,9 @@ app.MapGet("/pids", () => JsonSerializer.Serialize(Process.GetProcesses().Select
 app.MapGet("/exec", (string cmd) => ExecuteShellCommand(cmd));
 app.MapGet("/logs", (ILogger<Program> logger) =>
 {
+    var src = new ActivitySource("Test");
+    using var activity = src.StartActivity("Custom-Activity-Logs");
+
     var msg = GetMsg();
 
     logger.LogTrace("TRACE: {Message}", msg);
@@ -76,6 +95,10 @@ app.MapGet("/logs", (ILogger<Program> logger) =>
 });
 app.MapGet("/fetch", async (IHttpClientFactory httpClientFactory, IConfiguration configuration) =>
 {
+    var src = new ActivitySource("Custom");
+    using var activity = src.StartActivity("Custom-Activity-Fetch");
+    activity?.AddTag("products_per_request", Random.Shared.Next(1, 1000));
+
     var client = httpClientFactory.CreateClient();
     var url = configuration["ServiceUrl"];
     var response = await client.GetAsync(url);
