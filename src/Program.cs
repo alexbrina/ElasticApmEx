@@ -15,6 +15,7 @@ using Serilog.Sinks.Elasticsearch;
 using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
+using Webapi;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -64,6 +65,8 @@ builder.Services.AddElasticApm(
 builder.Services.AddOpenApi();
 builder.Services.AddHttpClient();
 
+builder.Services.AddSingleton<ISellerMetrics, SellerMetrics>();
+
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
 var app = builder.Build();
@@ -77,7 +80,6 @@ if (app.Environment.IsDevelopment())
 app.MapGet("/", () => GetMsg());
 app.MapGet("/env", (IConfiguration configuration) => JsonSerializer.Serialize(configuration.AsEnumerable(), jsonSerializerOptions));
 app.MapGet("/pids", () => JsonSerializer.Serialize(Process.GetProcesses().Select(p => new { p.Id, p.ProcessName }), jsonSerializerOptions));
-app.MapGet("/exec", (string cmd) => ExecuteShellCommand(cmd));
 app.MapGet("/logs", (ILogger<Program> logger) =>
 {
     var src = new ActivitySource("Test");
@@ -93,7 +95,7 @@ app.MapGet("/logs", (ILogger<Program> logger) =>
 
     return msg;
 });
-app.MapGet("/fetch", async (IHttpClientFactory httpClientFactory, IConfiguration configuration) =>
+app.MapGet("/traces", async (IHttpClientFactory httpClientFactory, IConfiguration configuration) =>
 {
     var src = new ActivitySource("Custom");
     using var activity = src.StartActivity("Custom-Activity-Fetch");
@@ -109,42 +111,50 @@ app.MapGet("/fetch", async (IHttpClientFactory httpClientFactory, IConfiguration
         Body = responseBody
     };
 });
+app.MapGet("/metrics", async (HttpContext context, ISellerMetrics metrics) =>
+{
+    var startTime = DateTime.UtcNow;
+    var clientId = Random.Shared.NextInt64(100000000, 100000010).ToString();
+    var userAgent = context.Request.Headers.UserAgent.ToString();
+    var totalItems = Random.Shared.Next(1, 1000);
+
+    //using var memoryStream = new MemoryStream();
+    //await context.Request.Body.CopyToAsync(memoryStream);
+    //var requestSize = memoryStream.Length;
+    var requestSize = Random.Shared.Next(1000, 10000);
+
+    await Task.Delay(Random.Shared.Next(1, 50));
+
+    var processingTimeMs = (DateTime.UtcNow - startTime).TotalMilliseconds;
+
+    var httpStatus = context.Response.StatusCode.ToString();
+    var success = context.Response.StatusCode >= 200 && context.Response.StatusCode < 300;
+
+    // Send metrics - Fire and forget!
+    _ = metrics.AddIntegrationRequest(
+        clientId,
+        startTime,
+        totalItems,
+        requestSize,
+        processingTimeMs,
+        success,
+        httpStatus,
+        userAgent
+    );
+
+    return new
+    {
+        clientId,
+        startTime,
+        totalItems,
+        requestSize,
+        processingTimeMs,
+        success,
+        httpStatus,
+        userAgent
+    };
+});
 
 app.Run();
 
 static string GetMsg() => $"This is {Environment.MachineName} # {Environment.ProcessId} @ {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}";
-
-static string ExecuteShellCommand(string command)
-{
-    try
-    {
-        // Create a new process
-        using (Process process = new())
-        {
-            // Set up process start info
-            process.StartInfo.FileName = "/bin/bash";
-            process.StartInfo.Arguments = $"-c \"{command}\"";
-            process.StartInfo.RedirectStandardOutput = true;
-            process.StartInfo.RedirectStandardError = true;
-            process.StartInfo.UseShellExecute = false;
-            process.StartInfo.CreateNoWindow = true;
-
-            // Start the process
-            process.Start();
-
-            // Read the output and error streams
-            string output = process.StandardOutput.ReadToEnd();
-            string error = process.StandardError.ReadToEnd();
-
-            // Wait for the process to finish
-            process.WaitForExit();
-
-            // Return output or error
-            return string.IsNullOrEmpty(error) ? output : error;
-        }
-    }
-    catch (Exception ex)
-    {
-        return $"An error occurred: {ex.Message}";
-    }
-}
