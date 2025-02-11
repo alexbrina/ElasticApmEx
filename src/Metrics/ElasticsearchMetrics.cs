@@ -7,6 +7,10 @@ namespace Webapi.Metrics;
 // modified, use only method scoped variables.
 public class ElasticsearchMetrics : IApplicationMetrics
 {
+    public const int SUCCESS = 0;
+    public const int INVALID_RESPONSE = 1;
+    public const int EXCEPTION_OCCURRED = 2;
+
     private static readonly string environment = SetupEnvironmentName();
     private static readonly string prefix = "seller";
 
@@ -23,15 +27,24 @@ public class ElasticsearchMetrics : IApplicationMetrics
 
     public async Task<int> AddPriceUpdate(PriceUpdate data)
     {
-        var index = GetIndexName("price.update");
-        var response = await client.IndexAsync(data, index: index);
-        if (!response.IsValidResponse)
+        try
         {
-            logger.LogWarning("Failed to add metric {MetricName} with message: {MetricResponse}", index, response);
-            return 1;
-        }
+            var index = GetIndexName("price.update");
+            var response = await client.IndexAsync(data, index: index);
+            if (!response.IsValidResponse)
+            {
+                logger.LogWarning("Failed to send metric {MetricName} to index {ElasticsearchIndex} with message " +
+                    "{ElasticsearchResponse}", nameof(PriceUpdate), index, response);
+                return INVALID_RESPONSE;
+            }
 
-        return 0;
+            return SUCCESS;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Exception occurred trying to send metric {MetricName} to Elasticsearch", nameof(PriceUpdate));
+            return EXCEPTION_OCCURRED;
+        }
     }
 
     /// <summary>
